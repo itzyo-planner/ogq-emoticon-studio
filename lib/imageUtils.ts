@@ -285,7 +285,7 @@ export const processImageForOutput = async (
   const {
     outputWidth = OUTPUT_WIDTH,
     outputHeight = OUTPUT_HEIGHT,
-    scaleRatio = 1,
+    scaleRatio = 0.86,
     padding = 15,
     whiteThreshold = 240,
     softEdgeBand = 12,
@@ -299,6 +299,7 @@ export const buildOgqMainImage = (processedStickerDataUrl: string): Promise<stri
   processImageForOutput(processedStickerDataUrl, {
     outputWidth: OGQ_MAIN_WIDTH,
     outputHeight: OGQ_MAIN_HEIGHT,
+    scaleRatio: 0.82,
     padding: 15,
     whiteThreshold: 250,
     softEdgeBand: 4,
@@ -308,10 +309,128 @@ export const buildOgqTabImage = (processedStickerDataUrl: string): Promise<strin
   processImageForOutput(processedStickerDataUrl, {
     outputWidth: OGQ_TAB_WIDTH,
     outputHeight: OGQ_TAB_HEIGHT,
+    scaleRatio: 0.86,
     padding: 6,
     whiteThreshold: 250,
     softEdgeBand: 4,
   });
+
+export const flattenOnWhite = async (base64Url: string): Promise<string> => {
+  const img = await loadImage(base64Url);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0);
+  return canvas.toDataURL('image/png');
+};
+
+export const removeSpecks = (
+  data: Uint8ClampedArray,
+  width: number,
+  alphaThreshold = 10
+): void => {
+  const total = data.length / 4;
+  const height = total / width;
+  const visited = new Uint8Array(total);
+  const components: number[][] = [];
+
+  for (let px = 0; px < total; px++) {
+    if (visited[px] || data[px * 4 + 3] <= alphaThreshold) {
+      visited[px] = 1;
+      continue;
+    }
+    // BFS to find connected component
+    const component: number[] = [];
+    const queue: number[] = [px];
+    visited[px] = 1;
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      component.push(cur);
+      const x = cur % width;
+      const y = Math.floor(cur / width);
+      const neighbors = [
+        x > 0 ? cur - 1 : -1,
+        x < width - 1 ? cur + 1 : -1,
+        y > 0 ? cur - width : -1,
+        y < height - 1 ? cur + width : -1,
+      ];
+      for (const nb of neighbors) {
+        if (nb >= 0 && !visited[nb] && data[nb * 4 + 3] > alphaThreshold) {
+          visited[nb] = 1;
+          queue.push(nb);
+        }
+      }
+    }
+    components.push(component);
+  }
+
+  if (components.length === 0) return;
+
+  const maxSize = Math.max(...components.map((c) => c.length));
+  const threshold = maxSize * 0.02;
+
+  for (const component of components) {
+    if (component.length < threshold) {
+      for (const px of component) {
+        data[px * 4 + 3] = 0;
+      }
+    }
+  }
+};
+
+export const restoreEnclosedPixels = (
+  data: Uint8ClampedArray,
+  width: number
+): void => {
+  const total = data.length / 4;
+  const height = total / width;
+  // BFS flood fill from all border transparent pixels to find "outside" transparent pixels
+  const outside = new Uint8Array(total);
+  const queue: number[] = [];
+
+  const enqueue = (px: number) => {
+    if (!outside[px] && data[px * 4 + 3] === 0) {
+      outside[px] = 1;
+      queue.push(px);
+    }
+  };
+
+  for (let x = 0; x < width; x++) {
+    enqueue(x);
+    enqueue((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueue(y * width);
+    enqueue(y * width + width - 1);
+  }
+
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++];
+    const x = cur % width;
+    const y = Math.floor(cur / width);
+    if (x > 0)          enqueue(cur - 1);
+    if (x < width - 1)  enqueue(cur + 1);
+    if (y > 0)          enqueue(cur - width);
+    if (y < height - 1) enqueue(cur + width);
+  }
+
+  // Any transparent pixel NOT reachable from the border is enclosed — restore to white
+  for (let px = 0; px < total; px++) {
+    if (data[px * 4 + 3] === 0 && !outside[px]) {
+      const idx = px * 4;
+      data[idx] = 255;
+      data[idx + 1] = 255;
+      data[idx + 2] = 255;
+      data[idx + 3] = 255;
+    }
+  }
+};
 
 export const dataUrlToBase64 = (dataUrl: string): string =>
   dataUrl.replace(/^data:image\/(png|jpe?g);base64,/, '');

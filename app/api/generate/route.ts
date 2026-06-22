@@ -16,6 +16,8 @@ interface GenerateRequest {
   referenceImageBase64: string | null;
   /** Per-slot composition phrase, e.g. bust-up, worm's-eye, chibi full body. */
   composition?: string;
+  noText?: boolean;
+  noOutline?: boolean;
 }
 
 
@@ -283,6 +285,8 @@ export async function POST(request: NextRequest) {
       style,
       referenceImageBase64,
       composition,
+      noText,
+      noOutline,
     } = body;
 
     if (!provider || !model) {
@@ -311,7 +315,8 @@ export async function POST(request: NextRequest) {
       scenarioPrompt,
       style,
       !!referenceImageBase64,
-      composition
+      composition,
+      { noText, noOutline }
     );
 
     let imageData: string;

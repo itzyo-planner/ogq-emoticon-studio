@@ -6,7 +6,8 @@ export const generateEmoticonImage = async (
   scenarioPrompt: string,
   style: string,
   referenceImageBase64: string | null,
-  composition?: string
+  composition?: string,
+  options?: { noText?: boolean; noOutline?: boolean }
 ): Promise<string> => {
   try {
     const response = await fetch('/api/generate', {
@@ -23,6 +24,8 @@ export const generateEmoticonImage = async (
         style,
         referenceImageBase64,
         composition,
+        noText: options?.noText,
+        noOutline: options?.noOutline,
       }),
     });
 

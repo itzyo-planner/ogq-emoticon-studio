@@ -8,6 +8,7 @@ import {
   CharacterHistoryItem,
   useCharacterHistory,
 } from '@/hooks/useCharacterHistory';
+import SketchCanvas from '@/components/SketchCanvas';
 
 interface Props {
   apiConfig: ApiConfig;
@@ -66,6 +67,8 @@ export default function StepUpload({
     initialStyle.selected
   );
   const [customStyle, setCustomStyle] = useState(initialStyle.custom);
+
+  const [showSketch, setShowSketch] = useState(false);
 
   const { history, isLoaded, addToHistory, deleteFromHistory, clearHistory } =
     useCharacterHistory();
@@ -443,6 +446,10 @@ export default function StepUpload({
                 onChange={handleFileChange}
               />
             </div>
+            <button onClick={() => setShowSketch(true)} className="px-4 py-2 rounded-xl border border-dashed border-purple-300 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 transition-colors flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+              밑그림 그리기
+            </button>
           </div>
         </section>
 
@@ -547,6 +554,18 @@ export default function StepUpload({
           다음: 시나리오 선택
         </button>
       </div>
+
+      {showSketch && (
+        <SketchCanvas
+          initialImage={preview}
+          onConfirm={(dataUrl) => {
+            setPreview(dataUrl);
+            onUpdate({ ...config, referenceImage: dataUrl });
+            setShowSketch(false);
+          }}
+          onClose={() => setShowSketch(false)}
+        />
+      )}
     </div>
   );
 }

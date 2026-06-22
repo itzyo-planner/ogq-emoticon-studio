@@ -22,6 +22,8 @@ import JSZip from 'jszip';
 import OutlineModal from '@/components/OutlineModal';
 import OutlinePackager from '@/components/OutlinePackager';
 import RecommendationCards from '@/components/RecommendationCards';
+import { addOutlineToPng } from '@/lib/outlineUtils';
+import { SavedEmoticon } from '@/types';
 
 interface Props {
   apiConfig: ApiConfig;
@@ -29,6 +31,7 @@ interface Props {
   prompts: string[];
   onConfigUpdate: (config: GenerationConfig) => void;
   onPromptsUpdate: (prompts: string[]) => void;
+  onEmoticonsChange?: (emoticons: SavedEmoticon[]) => void;
 }
 
 interface EmoticonWithCost extends Emoticon {
@@ -36,7 +39,7 @@ interface EmoticonWithCost extends Emoticon {
 }
 
 
-export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdate, onPromptsUpdate }: Props) {
+export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdate, onPromptsUpdate, onEmoticonsChange }: Props) {
   const [emoticons, setEmoticons] = useState<EmoticonWithCost[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [editingItem, setEditingItem] = useState<EmoticonWithCost | null>(null);
@@ -45,8 +48,15 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
   const [hasStarted, setHasStarted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [useDarkPreview, setUseDarkPreview] = useState(false);
+  const [noText, setNoText] = useState(false);
+  const [noOutline, setNoOutline] = useState(false);
+  const [keepWhiteBg, setKeepWhiteBg] = useState(false);
+  const [lightboxItem, setLightboxItem] = useState<EmoticonWithCost | null>(null);
   const initialized = useRef(false);
   const abortRef = useRef(false);
+  // undo/redo
+  const historyRef = useRef<EmoticonWithCost[][]>([]);
+  const historyIndexRef = useRef(-1);
 
   const currentModel = AI_MODELS.find((m) => m.id === apiConfig.model);
   const costPerImage = currentModel?.costPerImage || 0;
@@ -89,8 +99,8 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
     newPrompt?: string,
     cost?: number
   ) => {
-    setEmoticons((prev) =>
-      prev.map((item) => {
+    setEmoticons((prev) => {
+      const updated = prev.map((item) => {
         if (item.id === id) {
           return {
             ...item,
@@ -102,9 +112,29 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
           };
         }
         return item;
-      })
-    );
+      });
+      onEmoticonsChange?.(updated);
+      return updated;
+    });
+  }, [onEmoticonsChange]);
+
+  const pushHistory = useCallback((state: EmoticonWithCost[]) => {
+    historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1);
+    historyRef.current.push([...state]);
+    historyIndexRef.current = historyRef.current.length - 1;
   }, []);
+
+  const handleUndo = () => {
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current--;
+    setEmoticons(historyRef.current[historyIndexRef.current]);
+  };
+
+  const handleRedo = () => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current++;
+    setEmoticons(historyRef.current[historyIndexRef.current]);
+  };
 
   const processItem = useCallback(async (item: EmoticonWithCost, customPrompt?: string): Promise<void> => {
     if (abortRef.current) return;
@@ -122,7 +152,8 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
           scenarioPrompt,
           config.style,
           config.referenceImage,
-          composition
+          composition,
+          { noText, noOutline }
         );
       let rawImage = await generateRawImage(promptToUse);
 
@@ -137,13 +168,15 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
         console.warn(`Clipping detection skipped for ID ${item.id}`, clipError);
       }
 
-      const processedImage = await processImageForOutput(rawImage);
+      const processedImage = keepWhiteBg
+        ? rawImage
+        : await processImageForOutput(rawImage);
       updateStatus(item.id, 'completed', processedImage, undefined, undefined, billedCost);
     } catch (err) {
       console.error(`Failed ID ${item.id}`, err);
       updateStatus(item.id, 'failed', undefined, 'Generation failed');
     }
-  }, [apiConfig, config, compositionPlan, costPerImage, updateStatus]);
+  }, [apiConfig, config, compositionPlan, costPerImage, updateStatus, noText, noOutline, keepWhiteBg]);
 
   // Initialize emoticons list
   useEffect(() => {
@@ -241,11 +274,44 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
   };
 
   const handleApplyOutline = (newDataUrl: string, itemId: number) => {
-    setEmoticons((prev) =>
-      prev.map((item) =>
+    setEmoticons((prev) => {
+      const updated = prev.map((item) =>
         item.id === itemId ? { ...item, imageUrl: newDataUrl } : item
-      )
+      );
+      onEmoticonsChange?.(updated);
+      return updated;
+    });
+  };
+
+  const handleBatchOutline = async () => {
+    const completed = emoticons.filter(e => e.status === 'completed' && e.imageUrl);
+    if (completed.length === 0) { alert('완성된 이미지가 없습니다.'); return; }
+    const updated = await Promise.all(
+      emoticons.map(async (e) => {
+        if (e.status !== 'completed' || !e.imageUrl) return e;
+        const outlined = await addOutlineToPng(e.imageUrl, { width: 3, color: '#ffffff', rounded: true });
+        return { ...e, imageUrl: outlined };
+      })
     );
+    setEmoticons(updated);
+    pushHistory(updated);
+    onEmoticonsChange?.(updated);
+  };
+
+  const handleRegenerateAll = () => {
+    const reset = emoticons.map(e => ({ ...e, status: 'pending' as const, imageUrl: null, error: undefined }));
+    setEmoticons(reset);
+    startGeneration(reset, parallelCount);
+  };
+
+  const handleRedrawAll = async () => {
+    const itemsToRedraw = emoticons.filter(e => e.status === 'completed' && e.imageUrl);
+    if (itemsToRedraw.length === 0) { alert('완성된 이미지가 없습니다.'); return; }
+    const reset = emoticons.map(e =>
+      e.status === 'completed' ? { ...e, status: 'pending' as const } : e
+    );
+    setEmoticons(reset);
+    startGeneration(reset, parallelCount);
   };
 
   const handleDownloadAllZip = async () => {
@@ -412,7 +478,23 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
         </div>
 
         {/* Controls Row */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mt-4 pt-4 border-t border-slate-100">
+        <div className="flex flex-col gap-4 mt-4 pt-4 border-t border-slate-100">
+          {/* Generation Options */}
+          <div className="flex flex-wrap gap-3 pt-0 border-b border-slate-100 pb-3">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={noText} onChange={e => setNoText(e.target.checked)} className="h-4 w-4 rounded accent-indigo-600" />
+              글자 없이
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={noOutline} onChange={e => setNoOutline(e.target.checked)} className="h-4 w-4 rounded accent-indigo-600" />
+              외곽선 없이(라인리스)
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={keepWhiteBg} onChange={e => setKeepWhiteBg(e.target.checked)} className="h-4 w-4 rounded accent-indigo-600" />
+              흰배경 원본 유지
+            </label>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
           {/* Parallel Processing Slider */}
           <div className="flex items-center gap-4 flex-1">
             <div className="flex items-center gap-2">
@@ -517,8 +599,20 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
                   </svg>
                   OGQ 패키지
                 </button>
+                <button onClick={handleBatchOutline} className="bg-purple-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-purple-700 shadow-md flex items-center gap-2 transition-all text-sm">
+                  일괄 외곽선
+                </button>
+                <button onClick={handleRegenerateAll} className="bg-rose-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-rose-600 shadow-md flex items-center gap-2 transition-all text-sm">
+                  전체 재생성
+                </button>
+                <button onClick={handleRedrawAll} className="bg-amber-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-amber-600 shadow-md flex items-center gap-2 transition-all text-sm" disabled={emoticons.filter(e=>e.status==='completed').length === 0}>
+                  전체 리드로우
+                </button>
               </>
             )}
+            <button onClick={handleUndo} className="px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-medium" title="되돌리기">↩ 실행취소</button>
+            <button onClick={handleRedo} className="px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-medium" title="앞으로">↪ 다시실행</button>
+          </div>
           </div>
         </div>
       </div>
@@ -791,7 +885,8 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
                 <img
                   src={item.imageUrl}
                   alt={item.prompt}
-                  className="w-full h-full object-contain p-2"
+                  className="w-full h-full object-contain p-2 cursor-zoom-in"
+                  onClick={() => item.status === 'completed' && item.imageUrl && setLightboxItem(item)}
                 />
 
                 {/* ID Badge */}
@@ -935,6 +1030,36 @@ export default function StepGenerate({ apiConfig, config, prompts, onConfigUpdat
           onClose={() => setOutlineItem(null)}
           onSave={handleApplyOutline}
         />
+      )}
+
+      {/* Lightbox */}
+      {lightboxItem && (
+        <div className="fixed inset-0 bg-black/90 z-[200] flex items-center justify-center p-4" onClick={() => setLightboxItem(null)}>
+          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
+            {/* 체커보드 배경 */}
+            <div className="rounded-2xl overflow-hidden" style={{
+              backgroundImage: 'repeating-conic-gradient(#808080 0% 25%, #fff 0% 50%)',
+              backgroundSize: '20px 20px'
+            }}>
+              <img src={lightboxItem.imageUrl!} alt="확대 보기" className="w-full h-auto" />
+            </div>
+            <button onClick={() => setLightboxItem(null)} className="absolute -top-10 right-0 text-white hover:text-slate-300 text-3xl">×</button>
+            {/* prev/next */}
+            <div className="flex justify-between mt-4">
+              <button onClick={() => {
+                const completed = emoticons.filter(e => e.status === 'completed' && e.imageUrl);
+                const idx = completed.findIndex(e => e.id === lightboxItem.id);
+                if (idx > 0) setLightboxItem(completed[idx - 1]);
+              }} className="text-white px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20">◀ 이전</button>
+              <span className="text-white text-sm self-center">#{lightboxItem.id} {lightboxItem.prompt}</span>
+              <button onClick={() => {
+                const completed = emoticons.filter(e => e.status === 'completed' && e.imageUrl);
+                const idx = completed.findIndex(e => e.id === lightboxItem.id);
+                if (idx < completed.length - 1) setLightboxItem(completed[idx + 1]);
+              }} className="text-white px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20">다음 ▶</button>
+            </div>
+          </div>
+        </div>
       )}
 
       <style jsx>{`

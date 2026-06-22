@@ -37,3 +37,23 @@ export interface GenerationConfig {
 }
 
 export type AppStep = 'api' | 'upload' | 'scenario' | 'generate';
+
+// 프로젝트 저장/불러오기용 직렬화 타입
+export interface SavedEmoticon {
+  id: number;
+  prompt: string;
+  imageUrl: string | null;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  error?: string;
+  cost?: number;
+}
+
+export interface ProjectSaveFile {
+  version: '1.0.0';
+  savedAt: string;
+  projectName: string;
+  apiConfig: Omit<ApiConfig, 'apiKey'>; // API 키 제외
+  config: GenerationConfig;
+  prompts: string[];
+  emoticons: SavedEmoticon[];
+}
